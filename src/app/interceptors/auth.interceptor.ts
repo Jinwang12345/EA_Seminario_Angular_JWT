@@ -1,73 +1,60 @@
 import { Injectable } from '@angular/core';
-import { HttpRequest, HttpHandler, HttpResponse, HttpEvent, HttpInterceptor } from '@angular/common/http';
-import { Observable, throwError, catchError, switchMap } from 'rxjs';
+import { 
+  HttpRequest, 
+  HttpHandler, 
+  HttpEvent, 
+  HttpInterceptor,
+  HttpErrorResponse 
+} from '@angular/common/http';
+import { Observable, throwError } from 'rxjs';
+import { catchError } from 'rxjs/operators';
 import { AuthService } from '../services/auth.service';
-import { UserService } from '../services/user.service';
 import { Router } from '@angular/router';
 
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {
+  constructor(
+    private authService: AuthService,
+    private router: Router
+  ) {}
 
-  private isRefreshing: boolean = false; // Para evitar bucles infinitos
-
-  constructor(private authService: AuthService, private router: Router) {}
-
-  intercept(request: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    // Obtener el token del AuthService
-    if (request.url.includes('/login')) {
-      return next.handle(request);
-    }
+  intercept(request: HttpRequest<unknown>, next: HttpHandler): Observable<HttpEvent<unknown>> {
     const token = this.authService.getToken();
-    console.log('Interceptando petición:', request.url);
-    console.log('Token actual:', token);
-    //Añadimos el header Authorization si hay token
+    
+    // Si existe token, agregarlo al header Authorization
     if (token) {
       request = request.clone({
         setHeaders: {
-          Authorization: `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
         }
       });
-      console.log('Token añadido a la petición:', request);
+    } else {
+      // Solo agregar Content-Type si no hay token
+      request = request.clone({
+        setHeaders: {
+          'Content-Type': 'application/json'
+        }
+      });
     }
+
     return next.handle(request).pipe(
-      catchError((error: HttpResponse<any>) => {
-        //Si el token expiró, intentamos refrescarlo
-        if ((error.status === 401) && !this.isRefreshing) {
-          console.log('Token expirado, intentando refrescar...');  
-          this.isRefreshing = true;
-
-          return this.authService.refreshToken().pipe(
-            switchMap((res: any) => {
-              console.log('Token refrescado:', res);
-              this.isRefreshing = false;
-              const newToken = res.token;
-              localStorage.setItem('token', newToken);
-
-              // Reintentar la petición original con el nuevo token
-              const retryReq = request.clone({
-                setHeaders: {
-                  Authorization: `Bearer ${newToken}`
-                }
-              });
-              console.log('Reintentando petición con nuevo token:', retryReq);
-              return next.handle(retryReq);
-            }),
-            catchError(err => {
-              if(err.status === 401){
-              console.log('No se pudo refrescar el token, redirigiendo al login.', err);
-              this.isRefreshing = false;
-              this.authService.logout();
-              return throwError(() => err);
-              }
-              return throwError(() => err);
-              
-            })
-          );
-          
+      catchError((error: HttpErrorResponse) => {
+        if (error.status === 401) {
+          // Token expirado o inválido
+          console.error('Error 401: Token inválido o expirado');
+          this.authService.logout();
+          this.router.navigate(['/login']);
+        } else if (error.status === 403) {
+          // Sin permisos suficientes
+          console.error('Error 403: No tienes permisos para realizar esta acción');
+          alert('⚠️ No tienes permisos de administrador para realizar esta acción');
+        } else if (error.status === 404) {
+          console.error('Error 404: Recurso no encontrado');
+        } else if (error.status === 500) {
+          console.error('Error 500: Error interno del servidor');
         }
-         if (error.status === 403) {
-          console.warn('Acceso prohibido');
-        }
+        
         return throwError(() => error);
       })
     );
